@@ -1,0 +1,734 @@
+---
+title: "Project 2: Covid Outcome Prediction"
+author: "Vignesh Ravindranath (vgr325)"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+---
+
+```{r global_options, include=FALSE}
+#DO NOT EDIT THIS CHUNK OR ANYTHING ABOVE IT!
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, fig.align = "center", warning = F, message = F, tidy=T, tidy.opts=list(width.cutoff=50), R.options=list(max.print=100,dplyr.print_max=100))
+
+class_diag <- function(probs, truth, p=0.5){ 
+  #CONFUSION MATRIX: CALCULATE ACCURACY, TPR, TNR, PPV 
+  if(is.character(truth)==TRUE) truth<-as.factor(truth) 
+  if(is.numeric(truth)==FALSE & is.logical(truth)==FALSE) truth<-as.numeric(truth)-1 
+  tab<-table(factor(probs>p,levels=c("FALSE","TRUE")),factor(truth, levels=c(0,1))) 
+  acc=sum(diag(tab))/sum(tab) 
+  sens=tab[2,2]/colSums(tab)[2] 
+  spec=tab[1,1]/colSums(tab)[1] 
+  ppv=tab[2,2]/rowSums(tab)[2] 
+  
+  #CALCULATE EXACT AUC 
+  ord<-order(probs, decreasing=TRUE) 
+  probs <- probs[ord]; truth <- truth[ord] 
+  TPR=cumsum(truth)/max(1,sum(truth))  
+  FPR=cumsum(!truth)/max(1,sum(!truth)) 
+  dup <-c(probs[-1]>=probs[-length(probs)], FALSE) 
+  TPR <-c(0,TPR[!dup],1); FPR<-c(0,FPR[!dup],1) 
+  n <- length(TPR) 
+  auc <- sum( ((TPR[-1]+TPR[-n])/2) * (FPR[-1]-FPR[-n])) 
+  data.frame(acc,sens,spec,ppv,auc) 
+}
+```
+
+## 0.0 Introduction
+
+For this report I will be looking into COVID-19 patient pre-condition dataset provided by the Mexican government (originally found on  [this kaggle challenge](https://www.kaggle.com/tanmoyx/covid19-patient-precondition-dataset)). The dataset contains information on **566,602 patients for 23 different attributes**, listed below. Before you get into the data, just know that the **bolded items** are the attributes that **remain** in my dataset for analysis after cleaning. Also, the original dataset uses `1's` for yes, `2's` for no, and (`97`,`98`,`99`, or `9999-99-99`) for `NA`.
+
+1. `id` - unique number for patients
+
+2. **`sex`** - F/M (1/2)
+
+3. **`patient_type`** - not hospitalized/hospitalized (1/2) 
+
+4. **`entry_date`** - date when patient entered hospital
+
+5. **`date_symptoms`** - date when patient started showing symptoms
+
+6. **`date_died`** - date patient died (9999-99-99 means recovered)
+
+7. `intubed` - if patient needs ventilator
+
+8. **`pneumonia`** - if patient has pneumonia
+
+9. **`age`** - age of patient
+
+10. `pregnancy` - if patient is pregnant
+
+11. **`diabetes`** - if patient has diabetes
+
+12. `copd` - if patient has Chronic Obstructive Pulmonary Disease (COPD)
+
+13. `asthma` - if patient has asthma
+
+14. `inmsupr` - if patient is immunosuppressed
+
+15. **`hypertension`** - if patient has hypertension
+
+16. `other_disease` - if patient has another disease
+
+17. `cardiovascular` - if patient had a history of a heart related disease
+
+18. **`obesity`** - if patient is obese
+
+19. `renal_chronic` - if patient has chronic renal disease
+
+20. `tobacco` - if patient uses tobacco products
+
+21. `contact_other_covid` - if patient came in contact with someone else with covid
+
+22. `icu` - if patient was admitted to the ICU
+
+23. **`covid_res`** - if patient has resistance - tested positive (1), negative (2), or is waiting for results (3)
+
+Again, I will only be analyzing the **bolded attributes** as the others either have a lot of `NA's` or `2's` (no). They don't have sufficient information to be analyzed. The cleaned data can be found on my [github repository](https://github.com/viggy-ravi/covid_outcome_predictions) repository. I will tidy the data in section `0.2` and begin analysis from section `1.0`.     
+
+### 0.1 Imports
+
+```{r}
+library(tidyverse)
+
+# import dataset (locally - file too large to fit on github)
+covid <- read.csv("./data/covid.csv")
+covid %>% head(3)
+
+## remove id column
+covid <- covid %>% select(-id)
+
+# get number of rows
+dim(covid)
+```
+
+
+### 0.2 Tidying 
+
+#### 0.2.1 Remove NAs
+
+As mentioned above, the data provided uses `97`, `98`, and `99` to represent `NA` values. So the first step is to remove all occurrences of these numbers. I first remove columns that contain approximately >50% `NA` values (approximately >250,000 values), since they will mostly be removed anyways.
+
+```{r}
+# step 1: remove all NA values (97, 98, 99)
+
+## count NA-numbers (97, 98, 99) in dataset
+count_na_nums <- function(x)sum(x==97 | x==98 | x==99)
+covid %>% summarize_all(count_na_nums)
+
+## remove features with lots of NA-numbers
+covid <- covid %>%
+  select(-intubed, 
+         -pregnancy,
+         -contact_other_covid, 
+         -icu)
+```
+
+I found that columns `intubed`, `pregnancy`, `contact_other_covid`, and `icu` have >50% `NA` values, so they are removed. Next, I will convert the all occurrences of `97-99` to `NA_integer_` and then remove them using `na.omit()`.
+
+```{r}
+## convert NA-numbers to NA
+
+## mutate if condition
+has_na_num <-function(x)any(x==97 | x==98 | x==99)
+
+## mutate if function (NA_integer_ to ensure T/F are of same type)
+replace_num_na <- function(x)if_else((x==97 | x==98 | x==99), NA_integer_, x)
+
+## replace values and remove
+covid <- covid %>% 
+  mutate_if(has_na_num, replace_num_na) %>% 
+  na.omit()
+
+## check for NA
+covid %>% summarise_all( funs(sum(is.na(.))) )
+
+## see how mach data was lost
+dim(covid)
+```
+
+#### 0.2.2 Create New Attributes
+
+Since dates are difficult to analyze, I will create a new attribute `incub_time`, which is the time between a patient first notices symptoms (`date_symptoms`) and the date they checked into the hospital (`entry_date`).
+
+```{r}
+# Step 2: create new numeric column for incubation time
+
+# incub time = (hospital) entry date - symptom date
+covid <- covid %>% 
+  mutate(incub_time = as.numeric(as.Date(entry_date, format="%d-%m-%Y") - 
+           as.Date(date_symptoms, format="%d-%m-%Y")) )
+
+# check if worked
+covid %>% select(entry_date, date_symptoms, incub_time) %>% head()
+
+# remove redundant columns
+covid <- covid %>% select(-entry_date, -date_symptoms)
+```
+
+I will also convert ages into the standard age ranges (`<18`, `18-29`, `30-39`, `40-49`, `50-64`, `65-74`, and `>75`) to make future analysis easier and more meaningful. This data will become **categorical** with **7 categories**. 
+
+```{r}
+# first make cut off ranges (case_when didn't work directly)
+covid$age_cat <- cut(covid$age, breaks=c(0,18,30,40,50,65,75), right = FALSE)
+covid$age_cat <- as.character(covid$age_cat)
+
+# convert to more readable form
+covid <- covid %>% mutate(age_range = case_when(
+  age_cat == "[0,18)"  ~ "<18",
+  age_cat == "[18,30)" ~ "18-29",
+  age_cat == "[30,40)" ~ "30-39",
+  age_cat == "[40,50)" ~ "40-49",
+  age_cat == "[50,65)" ~ "50-64",
+  age_cat == "[65,75)" ~ "65-74",
+  TRUE ~ ">75"
+))
+
+# drop intermediate column
+covid <- covid %>% select(-age_cat)
+
+# view
+covid %>% select(age, age_range) %>% head()
+```
+
+#### 0.2.3 Convert to Binary
+
+Next, I will convert the columns into their binary representations (0/1's). Currently, they are entered as `1's` for `True`/`female` and `2's` for `False`/`male`. For example, for the columns `diabetes`, a `1` indicates that the patient has diabetes (True) and `2` indicates that the patient doesn't have diabetes (False). This is true for all columns except for `hospitalized`, where the relationship is flipped for some reason. I will also convert the `date_died` to binary, where `0` is if the patient recovered (represented as `9999-99-99`) and `1` is if the patient died (represented as an actual date). Lastly, I will convert the column `covid_res` to categorical data - `positive`, `negative`, `waiting` - for the values `1`, `2`, and `3` respectively, and rename the column to `covid_test`.
+
+```{r}
+# step 3: convert to binary
+
+## define functions
+## 9999-99-99 = recovered (or 0); actual date == died (or 1)
+change_date_to_binary <- function(x)if_else(x=='9999-99-99',0,1)
+
+## 0 == F/Male; 1 == T/Female
+# abs(2-2) = 0 (F/Male)
+# abs(1-2) = 1 (T/Female)
+change_nmbr_to_binary <- function(x)if_else(x<=2, abs(x-2), as.double(x))
+
+## mutate
+covid <- covid %>% 
+  # create covid_test categorical data
+  mutate(covid_test = case_when(
+    covid_res == 1 ~ "positive",
+    covid_res == 2 ~ "negative",
+    covid_res == 3 ~ "waiting")) %>%
+  # convert `date_died` column to 0/1
+  mutate_at(vars(date_died), change_date_to_binary) %>%
+  mutate_at(vars(date_died), change_nmbr_to_binary) %>%
+  # convert numeric columns to 0/1
+  mutate_if(is.numeric, change_nmbr_to_binary) %>%
+  # convert `sex` to M/F (0/1)
+  mutate(sex = ifelse(sex == 0,'M','F')) %>%
+  # switch 1/0 to 0/1 (not hospitalized/hospitalized) for `patient_type`
+  mutate(hospitalized = ifelse(patient_type == 1,0,1)) %>%
+  # rename columns
+  rename(died = date_died) %>%
+  # remove redundant column
+  select(-patient_type, -covid_res)
+
+# all clean up is done!
+covid %>% head(3)
+```
+
+#### 0.2.4 Remove Attributes
+
+For the last step, I will remove features that don't have a large presence in the dataset. The dataset is very large and computation in the future sometimes doesn't work on a local machine, so I will go ahead and prune the dataset now. I only remove features that have a mean of less that 10% (most columns are binary so the mean corresponds to the proportion of `1's`). The 10% value was chosen arbitrarily.
+
+```{r}
+# summarize all numeric columns (these are between 0 and 1)
+colMeans(covid %>% dplyr::select(where(is.numeric)))
+```
+So, we see that `copd`, `asthma`, `inmsupr`, `other_disease`, `cardiovascular`, `renal_chronic`, and `tobacco` have means less than 0.10, so they will be removed. I will leave the column `died` as it will be a useful target variable.
+
+```{r}
+covid <- covid %>% select(-copd,
+                          -asthma,
+                          -inmsupr,
+                          -other_disease,
+                          -cardiovascular,
+                          -renal_chronic,
+                          -tobacco)
+dim(covid)
+```
+
+Great! Now the data should be all cleaned up. Since there was a lot that changed, here is a new list of all attributes that are in the cleaned dataset. Most features should be binary (0/1), numeric, or character values.
+
+1. `sex` - M/F
+
+2. `died` - if patient recovered/died (0/1)
+
+3. `pneumonia` - if patient does not have pneumonia/has pneumonia (0/1)
+
+4. `age` - numerical value of patient's age
+
+5. `diabetes` - if patient does not have diabetes/has diabetes (0/1)
+
+6. `hypertension` - if patient does not have hypertension/has hypertension (0/1)
+
+7. `obesity` - if patient does not have obesity/has obesity (0/1)
+
+8. `incub_time` - days between start of symptoms and date checked into hospital
+
+9. `age_range` - categories of age ranges (<18, 18-29, 30-39, 40-49, 50-64, 65-74, >75)
+
+10. `covid_test` - if patient's covid test came out positive, negative, or is waiting
+
+11. `hospitalized` - if patient was not hospitalized/hospitalized (0/1)
+
+#### 0.2.5 Quick Stats
+
+```{r}
+# quick stats on categorical data
+# ratio of M/F
+covid %>% group_by(sex) %>% summarise(n = round(n()/nrow(covid),2))
+
+# covid test
+covid %>% group_by(covid_test) %>% summarise(n = round(n()/nrow(covid),2))
+
+# age ranges
+covid %>% group_by(age_range) %>% summarise(n = round(n()/nrow(covid),2))
+```
+
+## 1.0 Analysis of Variance
+
+The pandemic has disproportionately been affecting the elderly population, due to the physiological changes that come with aging and potential pre-existing health conditions ([ref](https://www.who.int/news-room/feature-stories/detail/who-delivers-advice-and-support-for-older-people-during-covid-19)). I would like to explore if the rates of pre-existing conditions do vary among the different age groups (as a check to see how accurate the data holds to the information we've heard). This can be examined through a multivariate analysis of variance test or a MANOVA test. I will compare the mean rates of pre-existing conditions - `diabetes`, `hypertension`, `obesity` - among different age groups (`age_range`).
+
+$H_0:$ For each response variable, the means of all groups are equal ($\mu_1 = \mu_2 = \ldots = \mu_m$).
+
+$H_A:$ For at least one response variable, at least one group mean differs ($\mu_i \ne \mu_{i'}$). 
+
+```{r}
+# MANOVA (1)
+man <- manova(cbind(diabetes, hypertension, obesity)~age_range, data=covid)
+
+# summary - statistical significance
+summary(man)
+```
+
+Since the p-value < 0.05, we can reject the null-hypothesis. Now, let's find out which groups are different from each other for each variable.
+
+```{r}
+# one way ANOVA (3 tests)
+summary.aov(man)
+
+# pair-wised t-test (21 tests each)
+pairwise.t.test(covid$diabetes,    covid$age_range, p.adj="none")
+pairwise.t.test(covid$hypertension,covid$age_range, p.adj="none")
+pairwise.t.test(covid$obesity,     covid$age_range, p.adj="none")
+```
+
+From the one-way ANOVA tests and the individual t-tests, we see that most relations have differences in rates of pre-existing conditions between the various age groups (p < 0.05). However, it was interesting to see that the rates of diabetes between the age groups `<18` and `18-29` are closer together than for other groups (p = 0.005); also the rates of obesity between the age group `40-49` are closer to the age groups `50-64` and `65-74` (p=1.9e-9 and p=5.6e-6 respectively), but they are still statistically different. 
+
+That being said, since there were a lot of tests performed, we need to correct the p-value using the Bonferroni adjusted significance. 
+
+```{r}
+# n tests (1 MANOVA, 3 ANOVA, 63 t-tests)
+X <- 1 + 3 + (3*21)
+
+# prob of at least 1 type-I error
+1 - 0.95^X
+
+# Bonferroni adjusted significance level
+0.05/X
+```
+
+The Bonferroni adjusted p-value is `0.0007`. We see that the previous relation of diabetes between the age groups `<18` and `18-29` is no longer significant. In other words, the mean rate of diabetes between the age groups <18 and 18-29 are similar. 
+
+```{r}
+# remove variable to clean environment 
+rm(list= ls()[!(ls() %in% c('covid','class_diag'))])
+```
+
+## 2.0 Randomization Test
+
+From the MANOVA test we found that different age groups have different rates of pre-existing conditions (mostly). Now I would like to see how pre-existing conditions vary between men and women.
+
+From some research and exploration of the dataset, I found that men are disproportionately affected by COVID-19 than women ([ref](https://medicine.yale.edu/news-article/the-coronavirus-affects-women-and-men-differently--learning-how-may-help-stop-the-pandemic/)). However, I would like to see if there is a significant different in pre-existing condition rates between the men and women who passed away to COVID-19.
+
+```{r}
+# quick check
+
+# isolate death cases
+covid %>% filter(died == 1) %>%
+  # nrow() = 35541
+  group_by(sex) %>%
+  summarise(death_rate = round(n()/35541, 3))
+```
+
+We see that of those who died, 65% were men and 35% were women. 
+
+### 2.1 Define Problem
+
+To test to see if the rates of a pre-existing condition differ between men and women, I will perform a randomized test. First, I will look deeper into the three pre-existing conditions to see if men and women had similar rates for any one condition.
+
+```{r}
+# filter dataset to only those who passed away
+rnd_data <- covid %>% filter(died == 1)
+
+# true mean pre-existing rates between M/F
+rnd_data %>% group_by(sex) %>%
+  summarise(diabetes_rate = mean(diabetes), 
+            hypert_rate = mean(hypertension),
+            obesity_rate = mean(obesity))
+```
+
+Interestingly, among those who passed away, women have higher rates of pre-existing conditions than men, even though men suffer more severe cases and die of COVID-19 than women. That must mean there are other factors that played a role in the outcomes of COVID-19 for men. 
+
+Since the `obesity_rate`s are closest together, I will perform a randomized test on that pre-existing condition. This will provide us insight on how likely it is that `obesity` rates differ between the men and women who passed away from COVID-19.
+
+### 2.2 Randomized Test
+
+For the randomization test, I will shuffle the `sex` label and calculate the mean differences of obesity rates between the two groups. 
+
+$H_0:$ The average obesity rates among the two groups are equal.
+
+$H_A:$ The average obesity rates among the two groups are not equal
+
+```{r}
+# reduce dataset to important features
+rnd_data <- rnd_data %>% select(sex, obesity)
+
+# test
+set.seed(813)
+
+rand_dist <- vector()
+# there is a lot of data, so I will only do 100 samples
+# though, I get the same results for 100 and 5000 samples
+for(i in 1:100){
+  # sample sex
+  perm <- data.frame(obesity=rnd_data$obesity,
+                     sex=sample(rnd_data$sex))
+  
+  # mean difference
+  rand_dist[i] <- mean(perm[perm$sex=="F",]$obesity) - 
+                  mean(perm[perm$sex=="M",]$obesity)
+}
+
+# find true mean ages
+orig_diff <- rnd_data %>% group_by(sex) %>% 
+  summarise(avg = mean(obesity)) %>% 
+  summarise(diff(avg)) %>% pull()
+round(orig_diff, 3)
+
+# p-value
+mean(rand_dist > orig_diff | rand_dist < -orig_diff)
+```
+
+### 2.3 Null Distribution
+
+```{r}
+# histogram
+{hist(rand_dist, main="",ylab=""); abline(v = c(-orig_diff,orig_diff),col="red")}
+
+# orig_diff = -/+ 0.055
+```
+
+From the randomized test, we see that there is no chance that the rates of obesity should vary so much between the men and women who passed away. The true mean difference in obesity rates between men and women is 0.055. However, the entire null distribution falls within -0.055 and +0.055. 
+
+```{r}
+# remove variable to clean environment 
+rm(list= ls()[!(ls() %in% c('covid','class_diag'))])
+```
+
+## 3.0 Linear Regression
+
+### 3.1 Coefficients 
+
+Now I will build a linear regression model to predict the probability an individual will be hospitalized based on their sex and if they have any pre-existing conditions. 
+
+```{r}
+library(lmtest)
+library(sandwich)
+
+# linear regression model
+lm_fit <- lm(hospitalized~sex*diabetes + sex*hypertension + sex*obesity,
+             data=covid)
+summary(lm_fit)
+```
+
+The intercept (`0.113`) indicates the probability of being hospitalized if you are a woman. As expected, men have a higher risk (`+0.075`) of being hospitalized. In general, all three pre-existing conditions increases an individuals risk of being hospitalized, however, diabetes and hypertension are more of a risk (`0.240` and `0.184` respectively) than obesity (`0.014`). Diabetes and obesity increase the risk of being hospitalized for men specifically (`0.016` and `0.004` respectively), however hypertension seems to reduce their risk. 
+
+### 3.2 Regression Plot
+
+```{r}
+library(gridExtra)
+
+# only plot 25% of data points (to reduce execution time)
+set.seed(813)
+plot_df <- sample_n(covid, 0.25*nrow(covid)) %>% 
+  select(sex, diabetes, hypertension, obesity, hospitalized)
+
+# plot regressions
+p1 <- qplot(diabetes, hospitalized, data=plot_df, color=sex) +
+  geom_point() + geom_smooth(method='lm') + 
+  geom_vline(xintercept=mean(covid$diabetes,na.rm=T),lty=2)
+p2 <- qplot(hypertension, hospitalized, data=plot_df, color=sex)+
+  geom_point() + geom_smooth(method='lm') + 
+  geom_vline(xintercept=mean(covid$hypertension,na.rm=T),lty=2)
+p3 <- qplot(obesity, hospitalized, data=plot_df, color=sex)+
+  geom_point() + geom_smooth(method='lm') + 
+  geom_vline(xintercept=mean(covid$obesity,na.rm=T),lty=2)
+grid.arrange(p1, p2, p3, nrow=3)
+
+# R2
+round(summary(lm_fit)$r.sq, 3)
+```
+
+The model explains about 10.1% of the variation in the outcomes. 
+
+### 3.3 Check Assumptions
+
+```{r}
+# check assumptions of linearity, normality, homoscedasticity
+bptest(lm_fit)
+
+# Corrected SE
+coeftest(lm_fit, vcov=vcovHC(lm_fit))
+```
+
+Based on the Breusch-Pagan test, the p-value < 0.05, indicating that we can reject the null hypothesis and that too much of the variance is explained by additional explanatory variables (heteroscedasticity). There are minimal changes in the SE. Some features, like `interecept` and sexM`, the corrected SE was reduced. For the remaining features, the corrected SE was increased. 
+
+```{r}
+# remove variable to clean environment 
+rm(list= ls()[!(ls() %in% c('covid','class_diag'))])
+```
+
+## 4.0 Bootstrapping
+
+Now, I will compute the bootstrapped SE for the regression model found in `Section 3.0`. 
+
+```{r}
+# select important datapoints
+dat <- covid %>% select(sex, diabetes, hypertension, obesity, hospitalized)
+
+# bootstrap SE of slope (re-sampling observations) 
+set.seed(813)
+
+# there is a lot of data, so I will only do 100 samples
+# though, I get the same results for 100 and 5000 samples
+samp_distn <- replicate(100, {
+  boot_dat <- sample_frac(dat, replace=T)
+  fit <- lm(hospitalized~sex*diabetes + sex*hypertension + sex*obesity,
+            data=boot_dat)
+  coef(fit)
+})
+
+# compare the two methods
+samp_distn %>% t %>% as.data.frame %>% summarise_all(sd)
+```
+
+The all bootstrapped SE except for `sexM:obesity` are slightly higher than the SE found in `Section 3.1`. All SE, except for `sexM:obesity` were statistically significant in `Section 3.1`, so the respective bootstrapped SE should also be statistically significant. 
+
+```{r}
+# remove variable to clean environment 
+rm(list= ls()[!(ls() %in% c('covid','class_diag'))])
+```
+
+## 5.0 Logistic Regression - Subset of Data
+
+Although the linear regression provided some meaningful feedback from the coefficiets we fitted, a logistic regression would be much more effective for this dataset, since most features are binary. I will re-fit a logistic regression model on the same features from the linear regrssion model.
+
+### 5.1 Coefficients
+
+```{r}
+# logistic regression
+glm_fit <- glm(hospitalized~sex*diabetes + sex*hypertension + sex*obesity,
+               data=covid, family="binomial")
+exp(coef(glm_fit))
+```
+
+The coefficients indicate that `sexM`, `diabetes`, and `hypertension` all increase the risk of being hospitalized by a factor of `1.77`. `3.44`, and `2.85` respectively. The features `sexM:hypertension` reduces the risk of being hospitalized by a factor of `0.799`. The remaining features don't seem impact your risk of being hospitalized by the coronavirus (`~1`).   
+
+### 5.2 Confusion Matrix
+
+Let's see how well the model performed.
+
+```{r}
+# confusion matrix
+prob <- predict(glm_fit, type="response")
+pred <- ifelse(prob>.5,1,0)
+table(truth=covid$died, prediction=pred) %>% addmargins
+
+# acc, tpr, tnr, ppv, auc
+class_diag(prob, covid$died)
+```
+
+It looks like the model was about `90%` accurate in predicting if an individual would be hospitalized by the coronavirus based on inputs like their sex and pre-existing conditions. The AUC is about `0.74`. 
+
+### 5.3 Density Plot
+
+```{r}
+# log-odds
+covid$logit <- predict(glm_fit, type="link")
+
+covid %>% ggplot()+
+  geom_density(aes(logit, color=hospitalized, fill=hospitalized), alpha=.4)+
+  theme(legend.position=c(.85,.85))+
+  geom_vline(xintercept=0)+
+  xlab("logit (log-odds)")+
+  geom_rug(aes(logit,color=hospitalized))
+```
+
+The density plot looks a little busy, but that might be due to fact that we fit a logistic regression model on many factors and interactions. There are about 8 pairs of density plots, one for each feature from the model. They can be seen better when we color the density plots by `sex`.
+
+```{r}
+covid %>% ggplot()+
+  geom_density(aes(logit, color=sex, fill=sex), alpha=.4)+
+  theme(legend.position=c(.85,.85))+
+  geom_vline(xintercept=0)+
+  xlab("logit (log-odds)")+
+  geom_rug(aes(logit,color=sex))
+```
+
+### 5.4 ROC, AUC Curves
+
+```{r}
+library(plotROC)
+
+# ROC plot
+ROCplot <- ggplot(covid) + geom_roc(aes(d=died, m=prob), n.cuts=0) 
+ROCplot
+
+# AUC
+calc_auc(ROCplot) %>% select(AUC) %>% pull()
+```
+
+The area under the curve is about 0.74, meaning that the degree of separability between being hospitalized and not hospitalized is about 74%.
+
+```{r}
+# remove variable to clean environment 
+rm(list= ls()[!(ls() %in% c('covid','class_diag'))])
+```
+## 6.0 Logistic Regression - All of Data
+
+Now I will perform a logistic regression on all the attributes
+
+### 6.1 Fit Model
+
+```{r}
+# remove age since it is redundant with age_range
+covid <- covid %>% select(-age, -died)
+
+glm_fit2 <- glm(hospitalized~., data=covid, family="binomial")
+exp(coef(glm_fit2))
+
+# predict outcome using fitted model
+prob <- predict(glm_fit2, type="response")
+
+# acc, tpr, tnr, ppv, auc
+class_diag(prob, covid$hospitalized)
+```
+
+With all the features, the model has about the same accuracy (`0.89`) as the previous logistic regression model (`0.90`). However, the AUC is much higher (`0.88`) than the previous model's AUC (`0.74`).
+
+### 6.2 10-Fold CV
+
+```{r}
+# k-folds
+set.seed(813)
+k = 10 # number of folds
+
+data<-covid[sample(nrow(covid)),] #randomly order rows
+folds<-cut(seq(1:nrow(covid)), breaks=k, labels=F) #create folds
+
+diags<-NULL
+for(i in 1:k){
+  ## Create training and test sets
+  train<-data[folds!=i,]
+  test<-data[folds==i,]
+  
+  truth<-test$hospitalized
+  
+  ## Train model on training set (all but fold i)
+  fit<-glm(hospitalized~.,data=train,family="binomial")
+  
+  ## Test model on test set (fold i)
+  probs<-predict(fit, newdata = test,type="response")
+  
+  ## Get diagnostics for fold i
+  diags<-rbind(diags,class_diag(probs,truth))
+}
+
+summarize_all(diags,mean)
+```
+
+The 10-fold CV on the dataset with all attributes as about the same AUC (`0.88`) as the previous AUC value. This indicates that the model is not over-fitting.
+
+### 6.3 LASSO
+
+Although the model is not over-fitting, I would like to see which features the model deems important. So, I will perform a LASSO regression on the same model.
+
+```{r}
+# LASSO
+library(glmnet)
+set.seed(813)
+
+# lasso regression
+covid_x <- model.matrix(hospitalized~., data= covid)[,-1]
+covid_y <- as.matrix(covid$hospitalized)
+
+## scale x
+covid_x <- scale(covid_x)
+
+# remove dataset - so lasso can fit in memory
+rm(covid)
+
+## lasso
+cv.lasso1 <- cv.glmnet(x=covid_x, y=covid_y, family="binomial")
+lasso1 <- glmnet(x=covid_x, y=covid_y, family="binomial", alpha=1,
+                 lambda=cv.lasso1$lambda.1se)
+coef(lasso1)
+```
+
+The LASSO indicates that only `obesity` does not help with improving the model's predictions.
+
+### 6.4 10-Fold CV on LASSO Selected Featuers
+
+```{r}
+# 10-fold CV
+set.seed(813)
+k=10
+
+# re-read covid data
+#covid <- read.csv("https://raw.githubusercontent.com/viggy-ravi/covid_outcome_predictions/main/covid_sm.csv", sep=",", na.strings="NA", strip.white=T, stringsAsFactors=F)
+covid <- read.csv("./data/covid_sm.csv")
+
+lasso_dat <- covid %>% select(-obesity)
+
+data1<-lasso_dat[sample(nrow(lasso_dat)),] #put dataset in random order
+folds<-cut(seq(1:nrow(lasso_dat)),breaks=k,labels=F) #create folds
+
+diags<-NULL
+for(i in 1:k){    
+  # train and test datasets
+  train<-data1[folds!=i,] 
+  test<-data1[folds==i,]
+  
+  truth<-test$hospitalized
+  
+  ## Train model on training set (all but fold i)
+  fit<-glm(hospitalized~., data=train,family="binomial")
+  
+  ## Test model on test set (fold i)
+  probs<-predict(fit, newdata = test,type="response")
+  
+  ## Get diagnostics for fold i
+  diags<-rbind(diags,class_diag(probs,truth))
+}
+
+# average the diagnostics for all k-folds
+summarize_all(diags,mean)
+```
+
+Lastly, the final 10-fold CV after LASSO has the same (but slightly better) AUC of 0.89. Again, this indicates that the model did not over-fit.  
+
+```{R, echo=F}
+## DO NOT DELETE THIS BLOCK!
+sessionInfo()
+Sys.time()
+Sys.info()
+```
