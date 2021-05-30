@@ -2,13 +2,13 @@
 
 This project consists of:
 
-  1) Tidying dataset
-  2) MANOVA Testing
-  3) Randomization Test
-  4) Linear Regression
-  5) Bootstrapping
-  6) Logistic Regression (ROC, AUC)
-  7) Logistic LASSO Regression (k-fold cross validation)
+    1) Tidying dataset
+    2) MANOVA Testing
+    3) Randomization Test
+    4) Linear Regression
+    5) Bootstrapping
+    6) Logistic Regression (ROC, AUC)
+    7) Logistic LASSO Regression (k-fold cross validation)
 
 For this report I will be looking into COVID-19 patient pre-condition dataset provided by the Mexican government (originally found on  [this kaggle challenge](https://www.kaggle.com/tanmoyx/covid19-patient-precondition-dataset)). The dataset contains information on **566,602 patients for 23 different attributes**, listed below. Before you get into the data, just know that the **bolded items** are the attributes that **remain** in my dataset for analysis after cleaning. Also, the original dataset uses `1's` for yes, `2's` for no, and (`97`,`98`,`99`, or `9999-99-99`) for `NA`.
 
