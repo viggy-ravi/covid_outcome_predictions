@@ -1,5 +1,7 @@
 # covid_outcome_predictions
 
+View project [here](https://viggy-ravi.github.io/projects/).
+
 This project consists of:
 
     1) Tidying dataset
