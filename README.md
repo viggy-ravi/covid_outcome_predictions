@@ -1,4 +1,4 @@
-# covid_outcome_predictions
+# covid-outcome-predictions
 
 The R-markdown for this project can be viewed [here](https://viggy-ravi.github.io/projects/).
 
