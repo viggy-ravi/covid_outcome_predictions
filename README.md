@@ -1,6 +1,6 @@
 # covid_outcome_predictions
 
-View project [here](https://viggy-ravi.github.io/projects/).
+The R-markdown for this project can be viewed [here](https://viggy-ravi.github.io/projects/).
 
 This project consists of:
 
